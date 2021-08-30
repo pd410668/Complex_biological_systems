@@ -1,0 +1,136 @@
+---
+title: "Exploratory data analysis, dimension reduction, and latent variable models"
+author: "Paulina Duda"
+output: html_notebook
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("/home/linux/PycharmProjects/pythonProject/CBS/Lab3")
+```
+#### Dependencies
+```{r, results=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(patchwork)
+library(RColorBrewer)
+library(gplots)
+library(devtools)
+library(data.table)
+library(broom)
+library(Biobase)
+library(limma)
+library(edge)
+library(genefilter)
+library(GEOquery)
+library(qvalue)
+library(sva)
+library(jackstraw)
+library(irlba)
+library(Rtsne)
+library(corpcor)
+library(Seurat)
+library(SeuratData)
+library(bladderbatch)
+library(gridExtra)
+library(cluster)
+```
+
+#### Load the `ExpressionSet` data
+Make sure to apply log2 transformation and remove genes whose expression levels are below a threshold, 10:
+
+```{r}
+con = url("http://bowtie-bio.sourceforge.net/recount/ExpressionSets/bottomly_eset.RData")
+load(file=con)
+close(con)
+edata <- as.matrix(exprs(bottomly.eset))
+dim(edata)
+edata[1:5,1:5]
+edata <- edata[rowMeans(edata) > 10, ]
+edata <- log2(as.matrix(edata) + 1)
+```
+
+> Homework Problem 1: Make one heatmap of the aforementioned Bottomly data with the following options: a) both rows and columns are clustered, b) show a dendrogram only on the columns., and c) scale in the column direction.
+
+```{r}
+my_palette <- colorRampPalette(c("blue", "white", "orange"))(n = 299)
+# png("Duda_problem1.png",height=700,width=700)
+heatmap.2(edata,
+          main = "Bottomly et al. Clustered", # heat map title
+          notecol="black",      # change font color of cell labels to black
+          density.info="none",  # turns off density plot inside color legend
+          trace="none",         # turns off trace lines inside the heat map
+          margins =c(12,9),     # widens margins around plot
+          col=my_palette,       # use on color palette defined earlier
+          dendrogram="col",     # only draw a row dendrogram
+          scale = "col",
+          Colv=TRUE,
+          Rowv=TRUE)
+# dev.off()
+```
+
+#### Singular value decomposition (SVD)
+Scaling the edata matrix and compute SVD.
+```{r}
+edata <- t(scale(t(edata), scale=FALSE, center=TRUE))
+svd.out <- svd(edata)
+```
+
+#### Scatter plots using right Singular Vectors (Principal Components)
+```{r}
+plot(1:ncol(edata), svd.out$v[,1],pch=20)
+```
+We can make a scatter plot of the top 2 PCs. And using the meta data, we can color each data point accordingly.
+```{r}
+PCv = data.table(svd.out$v,pData(bottomly.eset))
+ggplot(PCv) + geom_point(aes(x=V1, y=V2, col=as.factor(strain)))
+```
+> Homework Problem 2: Explore different combinations of PCs in scatter plots while coloring the data points by the genetic strains. Find a combination of PCs that separate the strains well. Send only one scatterplot.
+```{r, message=FALSE}
+ggplot(PCv) + geom_point(aes(x=V2, y=V3, col=as.factor(strain))) + theme_light()
+ggsave('duda_problem2.pdf', plot = last_plot(), dpi = 300)
+```
+
+#### Boxplots and violin plots
+```{r}
+ggplot(PCv) + geom_violin(aes(x=as.factor(strain), y=V1),draw_quantiles = c(0.25, 0.5, 0.75)) +
+              geom_jitter(aes(x=as.factor(strain), y=V1))
+```
+
+#### Visualize Left Singular Vectors (Loadings)
+>Homework Problem 3: Make a scatter plot of the top 2 left singular vectors.
+```{r, warning=FALSE, message=FALSE}
+PCu = data.table(svd.out$u,pData(bottomly.eset))
+ggplot(PCu) +
+        geom_point(aes(x=seq_along(PCu$V2), y=V2, colour="darkgoldenrod1"), size=1) +
+        geom_point(aes(x=seq_along(PCu$V1), y=V1, colour="cornflowerblue"), size=1) +
+        xlab("pos") + ylab("value") + labs(title="V1 and V2 of left singular vectors", size = 15) +
+        scale_colour_manual(labels = c("V1", "V2"), values = c("cornflowerblue", "darkgoldenrod1")) +
+        theme_light()
+ggsave('duda_problem3.pdf', plot = last_plot(), dpi = 300)
+```
+
+> Homework Problem 4: Make one figure that contains violin plots of the top 5 left singular vectors (loadings).
+```{r, message=FALSE}
+ggplot(PCu) +
+        geom_violin(aes(x="V1", y=V1)) +
+        geom_violin(aes(x="V2", y=V2)) +
+        geom_violin(aes(x="V3", y=V3)) +
+        geom_violin(aes(x="V4", y=V4)) +
+        geom_violin(aes(x="V5", y=V5)) +
+        ylab("value") + labs(title="Top 5 left singular vectors") + theme_light()
+ggsave('duda_problem4.pdf', plot = last_plot(), dpi=300)
+```
+
+#### t-Distributed Stochastic Neighbor Embedding (t-SNE)
+```{r}
+set.seed(1)
+tsne_out <- Rtsne(edata,pca=TRUE,perplexity=30)
+tsne_out = data.table(tsne_out$Y)
+ggplot(tsne_out) + geom_point(aes(x=V1, y=V2))
+```
+
+> Homework Problem 5: Cluster the genes (rows) using K-means clustering (function kmeans()) on the original data, with k=5 clusters. Then, create a 2-dimensional t-SNE projection (as done previously) while using the 5 clusters to color the data points corresponding to genes.
+```{r, message=FALSE}
+kedata <- kmeans(edata, centers=5)
+ggplot(tsne_out) + geom_point(aes(x=V1, y=V2, color=factor(kedata$cluster))) + theme_light()
+ggsave('duda_problem5.pdf', plot = last_plot(), dpi=300)
+```
