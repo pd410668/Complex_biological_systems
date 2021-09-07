@@ -1,0 +1,182 @@
+---
+title: Analysis of single cell RNA-seq data from liver tissues from patients with nonalcoholic steatohepatitis.
+author: Paulina Duda
+output: html_notebook
+---
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8,
+                      echo=TRUE, warning=FALSE, message=FALSE)
+```
+#### Dependencies
+```{r, results=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(Seurat)
+library(patchwork)
+library(ggplot2)
+library(SingleR)
+library(celldex)
+library(RColorBrewer)
+library(SingleCellExperiment)
+library(data.table)
+library(Matrix)
+```
+
+
+#### Load the data
+```{r, warning=FALSE, message = FALSE}
+setwd("/home/linux/PycharmProjects/pythonProject/CBS/Project/data")
+data <- Read10X(data.dir = "./PT-2(12)/") # PT-3(21)
+liver <- CreateSeuratObject(counts = data, project = "liver", min.cells = 3, min.features = 200)
+liver
+```
+
+```{r, message = FALSE, warning=FALSE, results = FALSE}
+rownames(x = liver)[1:5] #  names of a genes, ex. first 10
+colnames(x = liver)[1:5] # names of a cell (barcodes as markers), ex. first 10
+```
+#### I have added two usefull values in diagnostics of cell quality.
+#### Michochondrial genes indicators of cell state and ribosomal proteins.
+```{r, message = FALSE}
+liver[["percent.mt"]] <- PercentageFeatureSet(liver, pattern = "^MT-") # add column MT (mitochondrial genes)
+liver[["percent.rb"]] <- PercentageFeatureSet(liver, pattern = "^RP[SL]") # add column RP (ribosomal proteins)
+```
+#### Data visualization for quality control
+```{r}
+VlnPlot(liver, features = c("nFeature_RNA","nCount_RNA","percent.mt","percent.rb"),
+        ncol = 4, pt.size = 0.06, cols=c("red", "black")) & theme(plot.title = element_text(size=18))
+```
+#### Plotted metadata features against each other and see how they correlate.
+#### The number above each plot is a Pearson correlation coefficient.
+```{r}
+plot1 <- FeatureScatter(liver, feature1 = "nCount_RNA", feature2 = "percent.mt", cols="blue")
+plot2 <- FeatureScatter(liver, feature1 = "nCount_RNA", feature2 = "percent.rb", cols="blue")
+plot3 <- FeatureScatter(liver, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", cols="blue")
+plot4 <- FeatureScatter(liver, feature1 = "percent.rb", feature2 = "percent.mt", cols="blue")
+plot1 + theme_light() + plot2 + theme_light() + plot3 + theme_light() + plot4 + theme_light()
+```
+#### Filter cells that have genes counts > 4000 and < 500
+#### Filter cells that have > 6% mitochondrial counts
+```{r}
+liver <- subset(liver, subset = nFeature_RNA > 500 & nFeature_RNA < 4000 & percent.mt < 6)
+```
+#### Violin plot after filtering
+```{r}
+VlnPlot(liver, features = c("nFeature_RNA","percent.mt"),
+        ncol = 2, pt.size = 0.06, cols=c("darkolivegreen3", "black")) & theme(plot.title = element_text(size=18))
+```
+#### Normalization
+```{r}
+Liver <- NormalizeData(liver) # log2-transform, scale it to 10,000 by default
+norm.liver <- liver[['RNA']]@data
+norm.liver[1:10, 1:3] # dots means zeros, lots of zeros is normal
+```
+#### Feature selection
+```{r}
+liver <- FindVariableFeatures(liver, selection.method = "vst", nfeatures = 2000) # 2000 by default
+liver.top10 <- head(VariableFeatures(liver), 10)
+liver.top10 # 10 most highly variable genes
+```
+#### Plot most variable genes
+```{r}
+LabelPoints(plot = VariableFeaturePlot(liver), points = liver.top10, repel = TRUE, xnudge = 0, ynudge = 0)
+```
+#### Scaling (linear transformation)
+```{r}
+all.genes <- rownames(liver)
+liver <- ScaleData(liver, features = all.genes)
+scale.liver <- liver[["RNA"]]@scale.data
+scale.liver[1:10, 1:3] # scaled data
+```
+#### Linear dimensional reduction (PCA)
+```{r}
+liver <- RunPCA(liver, features = VariableFeatures(object = liver))
+```
+#### Plot PCA loadings
+```{r}
+VizDimLoadings(liver, dims = 1:9, reduction = "pca", col="black") &
+  theme(axis.text=element_text(size=5), axis.title=element_text(size=8,face="bold")) + theme_light()
+```
+#### Heatmap of each PCs
+```{r}
+DimHeatmap(liver, dims = 1:9, nfeatures = 20, cells = 500, balanced = TRUE, fast = TRUE) # chosse 20 genes
+```
+#### Visualize reduced representations (used PCA)
+```{r}
+DimPlot(liver, reduction = "pca", cols="red") + theme_light()
+```
+#### Check how many PCs can be used without information loss
+```{r}
+ElbowPlot(liver,ndims = 30) + theme_light() # big drop happens at 25
+```
+#### Cluster the cells
+```{r}
+liver <- FindNeighbors(liver, dims = 1:25)
+liver <- FindClusters(liver, resolution = 0.5) # resolution change from defaul to obtain less clusters
+```
+#### Non-linear dimensional reduction
+```{r}
+liver <- RunUMAP(liver, dims = 1:25)
+table(liver@meta.data$seurat_clusters) # clusters sizes
+```
+#### Visualize reduced representations (used UMAP)
+```{r}
+DimPlot(liver, reduction = "umap", label = TRUE, repel = TRUE)  + theme_light()
+```
+#### Differential expression
+#### Cluster biomarkers
+#### Find all markers of cluster 1
+```{r}
+cluster1.markers <- FindMarkers(liver, ident.1 = 1, min.pct = 0.25, test.use = "wilcox")
+head(cluster1.markers, n = 10)
+dim(cluster1.markers)
+```
+#### Repeat the normalization and scaling (since we removed a lot of cells before)
+```{r}
+DefaultAssay(liver) <- "RNA"
+liver <- NormalizeData(liver)
+liver <- FindVariableFeatures(liver, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(liver)
+liver <- ScaleData(liver, features = all.genes)
+```
+#### Find markers for every cluster compared to all remaining cells
+#### and return only positive markers
+```{r}
+all.markers <- FindAllMarkers(liver, only.pos = T, min.pct = 0.5, logfc.threshold = 0.5)
+dim(all.markers)
+table(all.markers$cluster)
+```
+```{r}
+top3_markers <- as.data.frame(all.markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC))
+top3_markers
+```
+#### Cell type annotation using SingleR
+```{r}
+monaco.ref <- celldex::MonacoImmuneData() # get ref from MonacoImmuneData
+sce <- as.SingleCellExperiment(DietSeurat(liver)) # convert seurat object to single cell experiment
+sce
+```
+```{r}
+monaco.main <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.main)
+monaco.fine <- SingleR(test = sce,assay.type.test = 1,ref = monaco.ref,labels = monaco.ref$label.fine)
+```
+#### Summary of general cell type annotations
+```{r}
+table(monaco.main$pruned.labels)
+table(monaco.fine$pruned.labels)
+```
+#### Add the annotations to the Seurat object metadata
+```{r}
+liver@meta.data$monaco.main <- monaco.main$pruned.labels
+liver@meta.data$monaco.fine <- monaco.fine$pruned.labels
+```
+#### Visualize the annotations
+```{r}
+DimPlot(SetIdent(liver, value = "monaco.fine"), label = T , repel = T, label.size = 3) +
+  theme_light() + NoLegend()
+```
+#### Visualizes feature expression
+```{r}
+FeaturePlot(liver, features = c("MS4A1", "LYZ", "NKG7", "CD8B", "IL7R", "CD84"))
+# B cells, monocytes, natural killers
+# CD8 T, CD4 T, CD84
+```
